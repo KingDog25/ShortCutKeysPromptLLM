@@ -1,0 +1,19 @@
+{
+  "prompts": [
+    {
+      "name": "Редактирование длинного кода",
+      "hotkeys": "ctrl+alt+1",
+      "text": "Выводить только код который нужно исправить/добавить/удалить"
+    }
+  ],
+  "ai_sites": [
+    {
+      "name": "Perplexity AI",
+      "url": "https://playground.perplexity.ai/"
+    },
+    {
+      "name": "DeepSeek Chat",
+      "url": "https://chat.deepseek.com/"
+    }
+  ]
+}
