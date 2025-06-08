@@ -170,10 +170,14 @@ class PromptManagerApp:
         name_entry.grid(row=0, column=1, padx=5, pady=5, sticky=tk.EW, columnspan=2)
         name_entry.focus_set()
 
-        # Горячие клавиши
+        # Используйте:
         ttk.Label(main_frame, text="Горячие клавиши:").grid(row=1, column=0, sticky=tk.W, padx=5, pady=5)
-        hotkeys_entry = ttk.Entry(main_frame, width=40)
-        hotkeys_entry.grid(row=1, column=1, padx=5, pady=5, sticky=tk.EW)
+        hotkeys_frame = ttk.Frame(main_frame)
+        hotkeys_frame.grid(row=1, column=1, padx=5, pady=5, sticky=tk.EW)
+        hotkeys_entry = ttk.Entry(hotkeys_frame, width=30)
+        hotkeys_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        ttk.Button(hotkeys_frame, text="Записать", command=lambda: self.record_hotkey(hotkeys_entry)).pack(
+            side=tk.RIGHT, padx=5)
         ttk.Label(main_frame, text="(Пример: ctrl+alt+p)").grid(row=1, column=2, sticky=tk.W, padx=5, pady=5)
 
         # Текст промпта
@@ -223,6 +227,81 @@ class PromptManagerApp:
         ttk.Button(btn_frame, text="Отмена", command=dialog.destroy).pack(side=tk.RIGHT, padx=5)
         ttk.Button(btn_frame, text="Сохранить", command=save_prompt).pack(side=tk.RIGHT, padx=5)
 
+    def record_hotkey(self, entry_widget):
+        """Функция для записи нажатых клавиш в поле ввода горячих клавиш"""
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Запись горячей клавиши")
+        dialog.geometry("600x400")
+        dialog.resizable(False, False)
+        dialog.grab_set()
+
+        # Центрирование окна
+        window_width = 600
+        window_height = 400
+        screen_width = self.root.winfo_screenwidth()
+        screen_height = self.root.winfo_screenheight()
+        x = (screen_width - window_width) // 2
+        y = (screen_height - window_height) // 2
+        dialog.geometry(f"{window_width}x{window_height}+{x}+{y}")
+
+        # Сохраняем текущие горячие клавиши
+        keyboard.unhook_all()
+
+        label = ttk.Label(dialog, text="Нажмите комбинацию клавиш\nНапример: Ctrl+Alt+P", font=("Arial", 12), background='')
+        label.pack(pady=20)
+
+        result_var = tk.StringVar()
+        result_label = ttk.Label(dialog, textvariable=result_var, font=("Arial", 14, "bold"))
+        result_label.pack(pady=10)
+
+        keys_pressed = set()
+        key_combination = []
+
+        def on_key_press(e):
+            # Игнорируем события от модификаторов (они будут обрабатываться в on_key_release)
+            if e.name in ['ctrl', 'alt', 'shift', 'windows']:
+                return
+
+            # Добавляем модификаторы, если они нажаты
+            key_combination.clear()
+            if keyboard.is_pressed('ctrl'):
+                key_combination.append('ctrl')
+            if keyboard.is_pressed('alt'):
+                key_combination.append('alt')
+            if keyboard.is_pressed('shift'):
+                key_combination.append('shift')
+            if keyboard.is_pressed('windows'):
+                key_combination.append('windows')
+
+            # Добавляем основную клавишу
+            key_combination.append(e.name)
+
+            # Показываем комбинацию
+            result_var.set('+'.join(key_combination))
+
+        # Функция для закрытия диалога и сохранения комбинации
+        def save_combination():
+            if key_combination:
+                entry_widget.delete(0, tk.END)
+                entry_widget.insert(0, '+'.join(key_combination))
+            dialog.destroy()
+            # Восстанавливаем горячие клавиши
+            self.register_hotkeys()
+
+        # Привязываем обработчик к событиям клавиатуры
+        keyboard.on_press(on_key_press)
+
+        # Кнопки для сохранения/отмены
+        button_frame = ttk.Frame(dialog)
+        button_frame.pack(side=tk.BOTTOM, pady=20)
+
+        ttk.Button(button_frame, text="Сохранить", command=save_combination, width=16).pack(side=tk.LEFT, padx=20,                                                                                pady=8)
+        ttk.Button(button_frame, text="Отмена", command=lambda: [dialog.destroy(), self.register_hotkeys()],
+                   width=16).pack(side=tk.LEFT, padx=20, pady=8)
+
+        # При закрытии окна восстанавливаем горячие клавиши
+        dialog.protocol("WM_DELETE_WINDOW", lambda: [dialog.destroy(), self.register_hotkeys()])
+
     def edit_selected_prompt(self):
         selected = self.prompt_tree.selection()
         if not selected:
@@ -236,8 +315,8 @@ class PromptManagerApp:
         # Создание диалогового окна
         dialog = tk.Toplevel(self.root)
         dialog.title("Редактировать промпт")
-        dialog.geometry("500x400")
-        dialog.resizable(False, False)
+        dialog.geometry("700x600")
+        dialog.resizable(True, True)
         dialog.grab_set()  # Делаем окно модальным
 
         ttk.Label(dialog, text="Название:").grid(row=0, column=0, sticky=tk.W, padx=10, pady=5)
@@ -252,7 +331,7 @@ class PromptManagerApp:
         hotkeys_entry.grid(row=1, column=1, padx=10, pady=5, sticky=tk.EW)
         ttk.Label(dialog, text="(Пример: ctrl+alt+p)").grid(row=1, column=2, sticky=tk.W, padx=5, pady=5)
 
-        prompt_text = scrolledtext.ScrolledText(dialog, wrap=tk.WORD, width=40, height=10)
+        prompt_text = scrolledtext.ScrolledText(dialog, wrap=tk.WORD, width=80, height=25)
         prompt_text.grid(row=2, column=1, padx=10, pady=5, sticky=tk.NSEW, columnspan=2)
         prompt_text.insert(tk.END, prompt['text'])
 
