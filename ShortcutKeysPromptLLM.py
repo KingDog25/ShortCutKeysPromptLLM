@@ -9,8 +9,31 @@ import time
 import os
 import win32con
 import win32api
-import time
+import subprocess
+import sys
+from ctypes import windll, wintypes
 
+
+# Маппинг кириллических символов на латинские для горячих клавиш
+CYRILLIC_TO_LATIN = {
+    'й': 'q', 'ц': 'w', 'у': 'e', 'к': 'r', 'е': 't', 'н': 'y', 'г': 'u',
+    'ш': 'i', 'щ': 'o', 'з': 'p', 'х': '[', 'ъ': ']', 'ф': 'a', 'ы': 's',
+    'в': 'd', 'а': 'f', 'п': 'g', 'р': 'h', 'о': 'j', 'л': 'k', 'д': 'l',
+    'ж': ';', 'э': "'", 'я': 'z', 'ч': 'x', 'с': 'c', 'м': 'v', 'и': 'b',
+    'т': 'n', 'ь': 'm', 'б': ',', 'ю': '.',
+}
+
+
+def normalize_hotkey(hotkey_str):
+    """Нормализует строку горячих клавиш, заменяя кириллицу на латиницу."""
+    parts = hotkey_str.lower().split('+')
+    norm_parts = []
+    for part in parts:
+        part = part.strip()
+        if part in CYRILLIC_TO_LATIN:
+            part = CYRILLIC_TO_LATIN[part]
+        norm_parts.append(part)
+    return '+'.join(norm_parts)
 
 
 class PromptManagerApp:
@@ -19,53 +42,213 @@ class PromptManagerApp:
         self.root.title("Менеджер промптов для ИИ-моделей")
         self.root.geometry("900x600")
 
-        # Установка иконки приложения (если есть)
         try:
-            self.root.iconbitmap('prompt_manager.ico')  # Укажите путь к вашей иконке
+            self.root.iconbitmap('prompt_manager.ico')
         except:
             pass
 
-        # Данные приложения
+        self.delete_confirmation_active = False
         self.prompts = []
         self.ai_sites = [
             {"name": "Perplexity AI", "url": "https://playground.perplexity.ai/"},
             {"name": "DeepSeek Chat", "url": "https://chat.deepseek.com/"}
         ]
 
-        # Загрузка сохраненных данных
+        # Настройки (создаём ДО load_data)
+        self.always_on_top = tk.BooleanVar(value=False)
+        self.auto_send_after_insert = tk.BooleanVar(value=False)
+
         self.load_data()
 
-        # Создание меню
         self.create_menu()
-
-        # Создание основного интерфейса
         self.create_interface()
-
-        # Регистрация горячих клавиш
         self.register_hotkeys()
 
-        # Обработка закрытия окна
+        # Глобальный перехват Ctrl+C/V/Z/A на уровне виртуальных кодов
+        self._setup_global_clipboard_bindings()
+
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
 
+    # ─────────────────────────────────────────────
+    # Глобальный перехват Ctrl+C/V/Z/A для любой раскладки
+    # ─────────────────────────────────────────────
+    def _setup_global_clipboard_bindings(self):
+        """
+        Привязывает обработку Ctrl+C/V/Z/A через виртуальные коды клавиш,
+        что работает независимо от раскладки клавиатуры.
+        Виртуальные коды: C=0x43, V=0x56, Z=0x5A, A=0x41
+        """
+        def on_key(event):
+            # Проверяем что зажат Ctrl (state & 0x4)
+            ctrl_pressed = (event.state & 0x4) != 0
+            if not ctrl_pressed:
+                return
+
+            widget = event.widget
+            vk = event.keycode
+
+            # Ctrl+C (keycode 67)
+            if vk == 67:
+                self._do_copy(widget)
+                return "break"
+            # Ctrl+V (keycode 86)
+            elif vk == 86:
+                self._do_paste(widget)
+                return "break"
+            # Ctrl+Z (keycode 90)
+            elif vk == 90:
+                self._do_undo(widget)
+                return "break"
+            # Ctrl+A (keycode 65)
+            elif vk == 65:
+                self._do_select_all(widget)
+                return "break"
+
+        # Привязываем к корневому окну — перехватывает все нажатия
+        self.root.bind_all('<KeyPress>', on_key)
+
+    def _do_copy(self, widget):
+        """Копирование из любого виджета"""
+        try:
+            if isinstance(widget, tk.Text):
+                text = widget.get(tk.SEL_FIRST, tk.SEL_LAST)
+            elif isinstance(widget, ttk.Entry) or isinstance(widget, tk.Entry):
+                if widget.selection_present():
+                    text = widget.selection_get()
+                else:
+                    return
+            else:
+                return
+            self.root.clipboard_clear()
+            self.root.clipboard_append(text)
+        except tk.TclError:
+            pass
+
+    def _do_paste(self, widget):
+        """Вставка в любой виджет"""
+        try:
+            text = self.root.clipboard_get()
+            if isinstance(widget, tk.Text):
+                try:
+                    widget.delete(tk.SEL_FIRST, tk.SEL_LAST)
+                except tk.TclError:
+                    pass
+                widget.insert(tk.INSERT, text)
+            elif isinstance(widget, ttk.Entry) or isinstance(widget, tk.Entry):
+                try:
+                    widget.delete(tk.SEL_FIRST, tk.SEL_LAST)
+                except tk.TclError:
+                    pass
+                widget.insert(tk.INSERT, text)
+        except tk.TclError:
+            pass
+
+    def _do_undo(self, widget):
+        """Отмена в текстовом виджете"""
+        try:
+            if isinstance(widget, tk.Text):
+                widget.edit_undo()
+        except tk.TclError:
+            pass
+
+    def _do_select_all(self, widget):
+        """Выделить всё"""
+        try:
+            if isinstance(widget, tk.Text):
+                widget.tag_add(tk.SEL, "1.0", tk.END)
+                widget.mark_set(tk.INSERT, "1.0")
+                widget.see(tk.INSERT)
+            elif isinstance(widget, ttk.Entry) or isinstance(widget, tk.Entry):
+                widget.select_range(0, tk.END)
+                widget.icursor(tk.END)
+        except tk.TclError:
+            pass
+
+    # ─────────────────────────────────────────────
+    # Меню
+    # ─────────────────────────────────────────────
     def create_menu(self):
         menubar = tk.Menu(self.root)
         self.root.config(menu=menubar)
 
-        # Меню "Файл"
         file_menu = tk.Menu(menubar, tearoff=0)
         menubar.add_cascade(label="Файл", menu=file_menu)
         file_menu.add_command(label="Сохранить", command=self.save_data)
         file_menu.add_separator()
+        file_menu.add_command(label="Настройки", command=self.show_settings_dialog)
+        file_menu.add_separator()
         file_menu.add_command(label="Выход", command=self.on_close)
 
-        # Меню "Управление"
         manage_menu = tk.Menu(menubar, tearoff=0)
         menubar.add_cascade(label="Управление", menu=manage_menu)
         manage_menu.add_command(label="Добавить промпт", command=self.show_add_prompt_dialog)
         manage_menu.add_command(label="Управление сайтами", command=self.show_manage_sites_dialog)
 
+    # ─────────────────────────────────────────────
+    # Настройки
+    # ─────────────────────────────────────────────
+    def show_settings_dialog(self):
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Настройки")
+        dialog.geometry("420x220")
+        dialog.resizable(False, False)
+        dialog.grab_set()
+        dialog.transient(self.root)
+        self._center_window(dialog, 420, 220)
+        self._make_topmost_safe(dialog)
+
+        main_frame = ttk.Frame(dialog, padding=20)
+        main_frame.pack(fill=tk.BOTH, expand=True)
+
+        ttk.Checkbutton(
+            main_frame,
+            text="Поверх остальных окон",
+            variable=self.always_on_top,
+            command=self._apply_always_on_top
+        ).pack(anchor=tk.W, pady=8)
+
+        ttk.Checkbutton(
+            main_frame,
+            text="Автоматически отправить после вставки",
+            variable=self.auto_send_after_insert
+        ).pack(anchor=tk.W, pady=8)
+
+        # Кнопка ОК — внизу, широкая, привязана к bottom
+        ok_btn = ttk.Button(dialog, text="OK", command=lambda: [self.save_data(), dialog.destroy()])
+        ok_btn.pack(side=tk.BOTTOM, fill=tk.X, padx=20, pady=15)
+
+    def _apply_always_on_top(self):
+        """Применяет настройку поверх остальных окон"""
+        self.root.attributes('-topmost', self.always_on_top.get())
+        # Если включено — сразу снимаем topmost чтобы свои окна были выше
+        # (topmost будет восстановлен после закрытия дочерних окон)
+        self.save_data()
+
+    def _make_topmost_safe(self, dialog):
+        """
+        Делает дочернее окно поверх главного, не конфликтуя с topmost главного окна.
+        Временно снимает topmost с главного окна, чтобы диалог был виден.
+        """
+        # Временно убираем topmost с главного окна
+        if self.always_on_top.get():
+            self.root.attributes('-topmost', False)
+
+        dialog.attributes('-topmost', True)
+
+        def on_dialog_close():
+            # Восстанавливаем topmost главного окна
+            if self.always_on_top.get():
+                self.root.attributes('-topmost', True)
+            dialog.destroy()
+
+        dialog.protocol("WM_DELETE_WINDOW", on_dialog_close)
+        # Возвращаем оригинальный обработчик закрытия, если нужен
+        dialog._on_safe_close = on_dialog_close
+
+    # ─────────────────────────────────────────────
+    # Интерфейс
+    # ─────────────────────────────────────────────
     def create_interface(self):
-        # Создание фреймов
         main_frame = ttk.Frame(self.root)
         main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
 
@@ -75,10 +258,9 @@ class PromptManagerApp:
         right_frame = ttk.Frame(main_frame, padding=5)
         right_frame.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True)
 
-        # Левая часть - список промптов
+        # Левая часть — список промптов
         ttk.Label(left_frame, text="Список промптов:").pack(anchor=tk.W)
 
-        # Таблица промптов
         columns = ('name', 'hotkeys')
         self.prompt_tree = ttk.Treeview(left_frame, columns=columns, show='headings', height=15)
         self.prompt_tree.heading('name', text='Название')
@@ -91,26 +273,24 @@ class PromptManagerApp:
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         self.prompt_tree.pack(fill=tk.BOTH, expand=True)
 
-        # Кнопки под таблицей
+        # Кнопки
         btn_frame = ttk.Frame(left_frame)
         btn_frame.pack(fill=tk.X, pady=5)
-
         ttk.Button(btn_frame, text="Добавить", command=self.show_add_prompt_dialog).pack(side=tk.LEFT, padx=5)
         ttk.Button(btn_frame, text="Редактировать", command=self.edit_selected_prompt).pack(side=tk.LEFT, padx=5)
         ttk.Button(btn_frame, text="Удалить", command=self.delete_selected_prompt).pack(side=tk.LEFT, padx=5)
-        ttk.Button(btn_frame, text="Вставить", command=self.insert_selected_prompt).pack(side=tk.LEFT, padx=5)
 
-        # Правая часть - текстовый редактор и выбор сайта
+        # Правая часть — редактор
         ttk.Label(right_frame, text="Текст промпта:").pack(anchor=tk.W)
-
-        self.prompt_text = scrolledtext.ScrolledText(right_frame, wrap=tk.WORD, height=15, font=('Arial', 10))
+        self.prompt_text = scrolledtext.ScrolledText(
+            right_frame, wrap=tk.WORD, height=15, font=('Arial', 10), undo=True
+        )
         self.prompt_text.pack(fill=tk.BOTH, expand=True, pady=5)
 
+        # Выбор сайта
         site_frame = ttk.Frame(right_frame)
         site_frame.pack(fill=tk.X, pady=5)
-
         ttk.Label(site_frame, text="Выберите сайт:").pack(side=tk.LEFT)
-
         self.site_var = tk.StringVar()
         self.site_combo = ttk.Combobox(site_frame, textvariable=self.site_var, state="readonly")
         self.site_combo['values'] = [site["name"] for site in self.ai_sites]
@@ -118,151 +298,113 @@ class PromptManagerApp:
             self.site_combo.current(0)
         self.site_combo.pack(side=tk.LEFT, padx=5, expand=True, fill=tk.X)
 
-        # Кнопка отправить
+        # Кнопка отправки
         send_btn = ttk.Button(right_frame, text="Отправить на сайт", command=self.send_to_site)
         send_btn.pack(pady=10, fill=tk.X)
 
-        # Привязка событий
-        self.prompt_tree.bind("<Double-1>", lambda e: self.insert_selected_prompt())
-        self.prompt_tree.bind("<Return>", lambda e: self.insert_selected_prompt())
+        # Двойной клик — открытие редактирования
+        self.prompt_tree.bind("<Double-1>", lambda e: self.edit_selected_prompt())
+        self.prompt_tree.bind("<Return>", lambda e: self.edit_selected_prompt())
 
-        # Загрузка промптов в таблицу
         self.update_prompts_list()
 
+    # ─────────────────────────────────────────────
+    # Работа с промптами
+    # ─────────────────────────────────────────────
     def update_prompts_list(self):
-        # Очистка таблицы
         for item in self.prompt_tree.get_children():
             self.prompt_tree.delete(item)
-
-        # Добавление промптов в таблицу
         for prompt in self.prompts:
             self.prompt_tree.insert('', tk.END, values=(prompt['name'], prompt['hotkeys']))
 
     def show_add_prompt_dialog(self):
-        # Создание диалогового окна
         dialog = tk.Toplevel(self.root)
         dialog.title("Добавить промпт")
         dialog.geometry("700x600")
+        self._center_window(dialog, 700, 600)
+        dialog.resizable(True, True)
+        dialog.grab_set()
+        dialog.transient(self.root)
+        self._make_topmost_safe(dialog)
 
-        # Центрирование окна
-        window_width = 700
-        window_height = 600
-        screen_width = self.root.winfo_screenwidth()
-        screen_height = self.root.winfo_screenheight()
-        x = (screen_width - window_width) // 2
-        y = (screen_height - window_height) // 2
-        dialog.geometry(f"{window_width}x{window_height}+{x}+{y}")
-
-        dialog.resizable(True, True)  # Позволяем изменять размер окна
-        dialog.grab_set()  # Делаем окно модальным
-
-        # Создаем основной фрейм для размещения элементов
         main_frame = ttk.Frame(dialog, padding=10)
         main_frame.pack(fill=tk.BOTH, expand=True)
-
-        # Настраиваем веса для строк и столбцов
         main_frame.columnconfigure(1, weight=1)
         main_frame.rowconfigure(2, weight=1)
 
-        # Название
         ttk.Label(main_frame, text="Название:").grid(row=0, column=0, sticky=tk.W, padx=5, pady=5)
         name_entry = ttk.Entry(main_frame, width=40)
         name_entry.grid(row=0, column=1, padx=5, pady=5, sticky=tk.EW, columnspan=2)
         name_entry.focus_set()
 
-        # Используйте:
         ttk.Label(main_frame, text="Горячие клавиши:").grid(row=1, column=0, sticky=tk.W, padx=5, pady=5)
         hotkeys_frame = ttk.Frame(main_frame)
         hotkeys_frame.grid(row=1, column=1, padx=5, pady=5, sticky=tk.EW)
         hotkeys_entry = ttk.Entry(hotkeys_frame, width=30)
         hotkeys_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
-        ttk.Button(hotkeys_frame, text="Записать", command=lambda: self.record_hotkey(hotkeys_entry)).pack(
-            side=tk.RIGHT, padx=5)
+        ttk.Button(
+            hotkeys_frame, text="Записать",
+            command=lambda: self.record_hotkey(hotkeys_entry, dialog)
+        ).pack(side=tk.RIGHT, padx=5)
         ttk.Label(main_frame, text="(Пример: ctrl+alt+p)").grid(row=1, column=2, sticky=tk.W, padx=5, pady=5)
 
-        # Текст промпта
         ttk.Label(main_frame, text="Текст промпта:").grid(row=2, column=0, sticky=tk.NW, padx=5, pady=5)
-
-        # Создаем frame для текстового поля, чтобы оно могло растягиваться
         text_frame = ttk.Frame(main_frame)
         text_frame.grid(row=2, column=1, sticky=tk.NSEW, columnspan=2, padx=5, pady=5)
         text_frame.columnconfigure(0, weight=1)
         text_frame.rowconfigure(0, weight=1)
-
-        # Текстовое поле с прокруткой
-        prompt_text = scrolledtext.ScrolledText(text_frame, wrap=tk.WORD, width=60, height=20)
+        prompt_text = scrolledtext.ScrolledText(text_frame, wrap=tk.WORD, width=60, height=20, undo=True)
         prompt_text.pack(fill=tk.BOTH, expand=True)
 
         def save_prompt():
             name = name_entry.get().strip()
             hotkeys = hotkeys_entry.get().strip()
             text = prompt_text.get("1.0", tk.END).strip()
-
             if not name or not text:
-                messagebox.showerror("Ошибка", "Название и текст промпта обязательны!")
+                self._show_error_dialog(dialog, "Ошибка", "Название и текст промпта обязательны!")
                 return
-
-            # Проверка уникальности горячих клавиш
             if hotkeys:
-                for prompt in self.prompts:
-                    if prompt['hotkeys'] == hotkeys:
-                        messagebox.showerror("Ошибка", "Такое сочетание клавиш уже используется!")
+                for p in self.prompts:
+                    if p['hotkeys'] == hotkeys:
+                        self._show_error_dialog(dialog, "Ошибка", "Такое сочетание клавиш уже используется!")
                         return
-
-            self.prompts.append({
-                'name': name,
-                'hotkeys': hotkeys,
-                'text': text
-            })
-
+            self.prompts.append({'name': name, 'hotkeys': hotkeys, 'text': text})
             self.update_prompts_list()
             self.register_hotkeys()
             self.save_data()
+            if hasattr(dialog, '_on_safe_close'):
+                # Восстанавливаем topmost главного окна
+                if self.always_on_top.get():
+                    self.root.attributes('-topmost', True)
             dialog.destroy()
 
-        # Кнопки
         btn_frame = ttk.Frame(main_frame)
         btn_frame.grid(row=3, column=0, columnspan=3, pady=10, sticky=tk.E)
+        ttk.Button(btn_frame, text="Отмена", command=lambda: dialog._on_safe_close() if hasattr(dialog, '_on_safe_close') else dialog.destroy()).pack(side=tk.RIGHT, padx=5)
+        ttk.Button(btn_frame, text="Сохранить", width=20, command=save_prompt).pack(side=tk.RIGHT, padx=5)
 
-        ttk.Button(btn_frame, text="Отмена", command=dialog.destroy).pack(side=tk.RIGHT, padx=5)
-        ttk.Button(btn_frame, text="Сохранить", command=save_prompt).pack(side=tk.RIGHT, padx=5)
-
-    def record_hotkey(self, entry_widget):
-        """Функция для записи нажатых клавиш в поле ввода горячих клавиш"""
+    def record_hotkey(self, entry_widget, parent_dialog):
         dialog = tk.Toplevel(self.root)
         dialog.title("Запись горячей клавиши")
         dialog.geometry("600x400")
         dialog.resizable(False, False)
         dialog.grab_set()
+        dialog.transient(self.root)
+        self._center_window(dialog, 600, 400)
+        dialog.attributes('-topmost', True)
 
-        # Центрирование окна
-        window_width = 600
-        window_height = 400
-        screen_width = self.root.winfo_screenwidth()
-        screen_height = self.root.winfo_screenheight()
-        x = (screen_width - window_width) // 2
-        y = (screen_height - window_height) // 2
-        dialog.geometry(f"{window_width}x{window_height}+{x}+{y}")
-
-        # Сохраняем текущие горячие клавиши
         keyboard.unhook_all()
 
-        label = ttk.Label(dialog, text="Нажмите комбинацию клавиш\nНапример: Ctrl+Alt+P", font=("Arial", 12), background='')
+        label = ttk.Label(dialog, text="Нажмите комбинацию клавиш\nНапример: Ctrl+Alt+P", font=("Arial", 12))
         label.pack(pady=20)
-
         result_var = tk.StringVar()
         result_label = ttk.Label(dialog, textvariable=result_var, font=("Arial", 14, "bold"))
         result_label.pack(pady=10)
-
-        keys_pressed = set()
         key_combination = []
 
         def on_key_press(e):
-            # Игнорируем события от модификаторов (они будут обрабатываться в on_key_release)
             if e.name in ['ctrl', 'alt', 'shift', 'windows']:
                 return
-
-            # Добавляем модификаторы, если они нажаты
             key_combination.clear()
             if keyboard.is_pressed('ctrl'):
                 key_combination.append('ctrl')
@@ -272,125 +414,157 @@ class PromptManagerApp:
                 key_combination.append('shift')
             if keyboard.is_pressed('windows'):
                 key_combination.append('windows')
-
-            # Добавляем основную клавишу
             key_combination.append(e.name)
-
-            # Показываем комбинацию
             result_var.set('+'.join(key_combination))
 
-        # Функция для закрытия диалога и сохранения комбинации
         def save_combination():
             if key_combination:
+                normalized = normalize_hotkey('+'.join(key_combination))
                 entry_widget.delete(0, tk.END)
-                entry_widget.insert(0, '+'.join(key_combination))
+                entry_widget.insert(0, normalized)
             dialog.destroy()
-            # Восстанавливаем горячие клавиши
             self.register_hotkeys()
 
-        # Привязываем обработчик к событиям клавиатуры
+        def cancel():
+            dialog.destroy()
+            self.register_hotkeys()
+
         keyboard.on_press(on_key_press)
 
-        # Кнопки для сохранения/отмены
         button_frame = ttk.Frame(dialog)
         button_frame.pack(side=tk.BOTTOM, pady=20)
-
-        ttk.Button(button_frame, text="Сохранить", command=save_combination, width=16).pack(side=tk.LEFT, padx=20,                                                                                pady=8)
-        ttk.Button(button_frame, text="Отмена", command=lambda: [dialog.destroy(), self.register_hotkeys()],
-                   width=16).pack(side=tk.LEFT, padx=20, pady=8)
-
-        # При закрытии окна восстанавливаем горячие клавиши
-        dialog.protocol("WM_DELETE_WINDOW", lambda: [dialog.destroy(), self.register_hotkeys()])
+        ttk.Button(button_frame, text="Сохранить", command=save_combination, width=16).pack(side=tk.LEFT, padx=20, pady=8)
+        ttk.Button(button_frame, text="Отмена", command=cancel, width=16).pack(side=tk.LEFT, padx=20, pady=8)
+        dialog.protocol("WM_DELETE_WINDOW", cancel)
 
     def edit_selected_prompt(self):
         selected = self.prompt_tree.selection()
         if not selected:
-            messagebox.showinfo("Информация", "Выберите промпт для редактирования")
+            self._show_info_dialog(self.root, "Информация", "Выберите промпт для редактирования")
             return
-
         item_id = selected[0]
         item_index = self.prompt_tree.index(item_id)
         prompt = self.prompts[item_index]
 
-        # Создание диалогового окна
         dialog = tk.Toplevel(self.root)
         dialog.title("Редактировать промпт")
         dialog.geometry("700x600")
         dialog.resizable(True, True)
-        dialog.grab_set()  # Делаем окно модальным
+        dialog.grab_set()
+        dialog.transient(self.root)
+        self._center_window(dialog, 700, 600)
+        self._make_topmost_safe(dialog)
 
-        ttk.Label(dialog, text="Название:").grid(row=0, column=0, sticky=tk.W, padx=10, pady=5)
-        name_entry = ttk.Entry(dialog, width=40)
+        main_frame = ttk.Frame(dialog, padding=10)
+        main_frame.pack(fill=tk.BOTH, expand=True)
+        main_frame.columnconfigure(1, weight=1)
+        main_frame.rowconfigure(2, weight=1)
+
+        ttk.Label(main_frame, text="Название:").grid(row=0, column=0, sticky=tk.W, padx=5, pady=5)
+        name_entry = ttk.Entry(main_frame, width=40)
         name_entry.insert(0, prompt['name'])
-        name_entry.grid(row=0, column=1, padx=10, pady=5, sticky=tk.EW, columnspan=2)
+        name_entry.grid(row=0, column=1, padx=5, pady=5, sticky=tk.EW, columnspan=2)
         name_entry.focus_set()
 
-        ttk.Label(dialog, text="Горячие клавиши:").grid(row=1, column=0, sticky=tk.W, padx=10, pady=5)
-        hotkeys_entry = ttk.Entry(dialog, width=40)
+        ttk.Label(main_frame, text="Горячие клавиши:").grid(row=1, column=0, sticky=tk.W, padx=5, pady=5)
+        hotkeys_frame = ttk.Frame(main_frame)
+        hotkeys_frame.grid(row=1, column=1, padx=5, pady=5, sticky=tk.EW)
+        hotkeys_entry = ttk.Entry(hotkeys_frame, width=30)
         hotkeys_entry.insert(0, prompt['hotkeys'])
-        hotkeys_entry.grid(row=1, column=1, padx=10, pady=5, sticky=tk.EW)
-        ttk.Label(dialog, text="(Пример: ctrl+alt+p)").grid(row=1, column=2, sticky=tk.W, padx=5, pady=5)
+        hotkeys_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        ttk.Button(
+            hotkeys_frame, text="Записать",
+            command=lambda: self.record_hotkey(hotkeys_entry, dialog)
+        ).pack(side=tk.RIGHT, padx=5)
+        ttk.Label(main_frame, text="(Пример: ctrl+alt+p)").grid(row=1, column=2, sticky=tk.W, padx=5, pady=5)
 
-        prompt_text = scrolledtext.ScrolledText(dialog, wrap=tk.WORD, width=80, height=25)
-        prompt_text.grid(row=2, column=1, padx=10, pady=5, sticky=tk.NSEW, columnspan=2)
+        ttk.Label(main_frame, text="Текст промпта:").grid(row=2, column=0, sticky=tk.NW, padx=5, pady=5)
+        text_frame = ttk.Frame(main_frame)
+        text_frame.grid(row=2, column=1, sticky=tk.NSEW, columnspan=2, padx=5, pady=5)
+        text_frame.columnconfigure(0, weight=1)
+        text_frame.rowconfigure(0, weight=1)
+        prompt_text = scrolledtext.ScrolledText(text_frame, wrap=tk.WORD, width=80, height=25, undo=True)
+        prompt_text.pack(fill=tk.BOTH, expand=True)
         prompt_text.insert(tk.END, prompt['text'])
-
-        ttk.Label(dialog, text="Текст промпта:").grid(row=2, column=0, sticky=tk.NW, padx=10, pady=5)
-
-        # Настройка веса строк и столбцов для правильного растягивания
-        dialog.grid_rowconfigure(2, weight=1)
-        dialog.grid_columnconfigure(1, weight=1)
 
         def save_edits():
             name = name_entry.get().strip()
             hotkeys = hotkeys_entry.get().strip()
             text = prompt_text.get("1.0", tk.END).strip()
-
             if not name or not text:
-                messagebox.showerror("Ошибка", "Название и текст промпта обязательны!")
+                self._show_error_dialog(dialog, "Ошибка", "Название и текст промпта обязательны!")
                 return
-
-            # Проверка уникальности горячих клавиш для других промптов
             for idx, p in enumerate(self.prompts):
                 if idx != item_index and p['hotkeys'] == hotkeys and hotkeys:
-                    messagebox.showerror("Ошибка", "Такое сочетание клавиш уже используется!")
+                    self._show_error_dialog(dialog, "Ошибка", "Такое сочетание клавиш уже используется!")
                     return
-
-            self.prompts[item_index] = {
-                'name': name,
-                'hotkeys': hotkeys,
-                'text': text
-            }
-
+            self.prompts[item_index] = {'name': name, 'hotkeys': hotkeys, 'text': text}
             self.update_prompts_list()
             self.register_hotkeys()
             self.save_data()
+            if hasattr(dialog, '_on_safe_close'):
+                if self.always_on_top.get():
+                    self.root.attributes('-topmost', True)
             dialog.destroy()
 
-        btn_frame = ttk.Frame(dialog)
+        btn_frame = ttk.Frame(main_frame)
         btn_frame.grid(row=3, column=1, columnspan=2, pady=10, sticky=tk.E)
-
-        ttk.Button(btn_frame, text="Отмена", command=dialog.destroy).pack(side=tk.RIGHT, padx=5)
-        ttk.Button(btn_frame, text="Сохранить", command=save_edits).pack(side=tk.RIGHT, padx=5)
+        ttk.Button(btn_frame, text="Отмена", command=lambda: dialog._on_safe_close() if hasattr(dialog, '_on_safe_close') else dialog.destroy()).pack(side=tk.RIGHT, padx=5)
+        ttk.Button(btn_frame, text="Сохранить", width=20, command=save_edits).pack(side=tk.RIGHT, padx=5)
 
     def delete_selected_prompt(self):
         selected = self.prompt_tree.selection()
         if not selected:
-            messagebox.showinfo("Информация", "Выберите промпт для удаления")
+            self._show_info_dialog(self.root, "Информация", "Выберите промпт для удаления")
             return
+        if self.delete_confirmation_active:
+            return
+        self.delete_confirmation_active = True
+
         item_id = selected[0]
         item_index = self.prompt_tree.index(item_id)
-        response = messagebox.askyesno("Подтверждение", "Удалить выбранный промпт?")
-        if response:
+
+        confirm_dialog = tk.Toplevel(self.root)
+        confirm_dialog.title("Подтверждение удаления")
+        confirm_dialog.geometry("350x150")
+        confirm_dialog.resizable(False, False)
+        confirm_dialog.grab_set()
+        confirm_dialog.transient(self.root)
+        self._center_window(confirm_dialog, 350, 150)
+
+        # Временно снимаем topmost с главного окна
+        if self.always_on_top.get():
+            self.root.attributes('-topmost', False)
+        confirm_dialog.attributes('-topmost', True)
+
+        ttk.Label(confirm_dialog, text="Удалить выбранный промпт?", font=("Arial", 11)).pack(pady=20)
+
+        def on_yes():
             del self.prompts[item_index]
             self.update_prompts_list()
             self.register_hotkeys()
             self.save_data()
+            self.delete_confirmation_active = False
+            if self.always_on_top.get():
+                self.root.attributes('-topmost', True)
+            confirm_dialog.destroy()
 
-    def insert_selected_prompt(self):
+        def on_no():
+            self.delete_confirmation_active = False
+            if self.always_on_top.get():
+                self.root.attributes('-topmost', True)
+            confirm_dialog.destroy()
+
+        btn_frame = ttk.Frame(confirm_dialog)
+        btn_frame.pack(pady=10)
+        ttk.Button(btn_frame, text="Да", command=on_yes, width=10).pack(side=tk.LEFT, padx=10)
+        ttk.Button(btn_frame, text="Нет", command=on_no, width=10).pack(side=tk.LEFT, padx=10)
+        confirm_dialog.protocol("WM_DELETE_WINDOW", on_no)
+
+    def load_selected_prompt_to_editor(self):
+        """Загружает текст промпта в редактор (одиночный клик)"""
         selected = self.prompt_tree.selection()
         if not selected:
-            messagebox.showinfo("Информация", "Выберите промпт для вставки")
             return
         item_id = selected[0]
         item_index = self.prompt_tree.index(item_id)
@@ -398,17 +572,23 @@ class PromptManagerApp:
         self.prompt_text.delete("1.0", tk.END)
         self.prompt_text.insert(tk.END, prompt['text'])
 
+    # ─────────────────────────────────────────────
+    # Управление сайтами
+    # ─────────────────────────────────────────────
     def show_manage_sites_dialog(self):
         dialog = tk.Toplevel(self.root)
         dialog.title("Управление сайтами")
         dialog.geometry("500x350")
         dialog.resizable(False, False)
         dialog.grab_set()
+        dialog.transient(self.root)
+        self._center_window(dialog, 500, 350)
+        self._make_topmost_safe(dialog)
 
         sites_listbox = tk.Listbox(dialog, width=60, height=10)
-        scrollbar = ttk.Scrollbar(dialog, orient=tk.VERTICAL, command=sites_listbox.yview)
-        sites_listbox.configure(yscrollcommand=scrollbar.set)
-        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        scrollbar_sb = ttk.Scrollbar(dialog, orient=tk.VERTICAL, command=sites_listbox.yview)
+        sites_listbox.configure(yscrollcommand=scrollbar_sb.set)
+        scrollbar_sb.pack(side=tk.RIGHT, fill=tk.Y)
         sites_listbox.pack(padx=10, pady=10, fill=tk.BOTH, expand=True)
 
         for site in self.ai_sites:
@@ -417,15 +597,17 @@ class PromptManagerApp:
         def add_site():
             add_win = tk.Toplevel(dialog)
             add_win.title("Добавить сайт")
-            add_win.geometry("400x150")
+            add_win.geometry("400x180")
             add_win.resizable(False, False)
             add_win.grab_set()
+            add_win.transient(dialog)
+            add_win.attributes('-topmost', True)
+            self._center_window(add_win, 400, 180)
 
             ttk.Label(add_win, text="Название:").pack(anchor=tk.W, padx=10, pady=5)
             name_entry = ttk.Entry(add_win, width=40)
             name_entry.pack(padx=10, fill=tk.X)
             name_entry.focus_set()
-
             ttk.Label(add_win, text="URL:").pack(anchor=tk.W, padx=10, pady=5)
             url_entry = ttk.Entry(add_win, width=40)
             url_entry.pack(padx=10, fill=tk.X)
@@ -434,38 +616,84 @@ class PromptManagerApp:
                 name = name_entry.get().strip()
                 url = url_entry.get().strip()
                 if not name or not url:
-                    messagebox.showerror("Ошибка", "Название и URL обязательны!")
+                    self._show_error_dialog(add_win, "Ошибка", "Название и URL обязательны!")
                     return
-
                 if not url.startswith(('http://', 'https://')):
                     url = 'https://' + url
-
                 self.ai_sites.append({'name': name, 'url': url})
-                self.site_combo['values'] = [site['name'] for site in self.ai_sites]
+                self.site_combo['values'] = [s['name'] for s in self.ai_sites]
                 sites_listbox.insert(tk.END, f"{name} - {url}")
                 self.save_data()
                 add_win.destroy()
 
-            btn_frame = ttk.Frame(add_win)
-            btn_frame.pack(pady=5, fill=tk.X)
+            bf = ttk.Frame(add_win)
+            bf.pack(pady=8, fill=tk.X, padx=10)
+            ttk.Button(bf, text="Отмена", command=add_win.destroy).pack(side=tk.RIGHT, padx=5)
+            ttk.Button(bf, text="Сохранить", command=save_site).pack(side=tk.RIGHT, padx=5)
 
-            ttk.Button(btn_frame, text="Отмена", command=add_win.destroy).pack(side=tk.RIGHT, padx=5)
-            ttk.Button(btn_frame, text="Сохранить", command=save_site).pack(side=tk.RIGHT, padx=5)
-
-        def delete_site():
-            selected = sites_listbox.curselection()
-            if not selected:
-                messagebox.showinfo("Информация", "Выберите сайт для удаления")
+        def edit_site():
+            sel = sites_listbox.curselection()
+            if not sel:
+                self._show_info_dialog(dialog, "Информация", "Выберите сайт для редактирования")
                 return
-            idx = selected[0]
+            idx = sel[0]
             if idx >= len(self.ai_sites):
                 return
+            site = self.ai_sites[idx]
 
-            response = messagebox.askyesno("Подтверждение", "Удалить выбранный сайт?")
+            edit_win = tk.Toplevel(dialog)
+            edit_win.title("Редактировать сайт")
+            edit_win.geometry("400x180")
+            edit_win.resizable(False, False)
+            edit_win.grab_set()
+            edit_win.transient(dialog)
+            edit_win.attributes('-topmost', True)
+            self._center_window(edit_win, 400, 180)
+
+            ttk.Label(edit_win, text="Название:").pack(anchor=tk.W, padx=10, pady=5)
+            name_entry = ttk.Entry(edit_win, width=40)
+            name_entry.insert(0, site['name'])
+            name_entry.pack(padx=10, fill=tk.X)
+            name_entry.focus_set()
+            ttk.Label(edit_win, text="URL:").pack(anchor=tk.W, padx=10, pady=5)
+            url_entry = ttk.Entry(edit_win, width=40)
+            url_entry.insert(0, site['url'])
+            url_entry.pack(padx=10, fill=tk.X)
+
+            def save_edits():
+                name = name_entry.get().strip()
+                url = url_entry.get().strip()
+                if not name or not url:
+                    self._show_error_dialog(edit_win, "Ошибка", "Название и URL обязательны!")
+                    return
+                if not url.startswith(('http://', 'https://')):
+                    url = 'https://' + url
+                self.ai_sites[idx] = {'name': name, 'url': url}
+                self.site_combo['values'] = [s['name'] for s in self.ai_sites]
+                sites_listbox.delete(0, tk.END)
+                for s in self.ai_sites:
+                    sites_listbox.insert(tk.END, f"{s['name']} - {s['url']}")
+                self.save_data()
+                edit_win.destroy()
+
+            bf = ttk.Frame(edit_win)
+            bf.pack(pady=8, fill=tk.X, padx=10)
+            ttk.Button(bf, text="Отмена", command=edit_win.destroy).pack(side=tk.RIGHT, padx=5)
+            ttk.Button(bf, text="Сохранить", command=save_edits).pack(side=tk.RIGHT, padx=5)
+
+        def delete_site():
+            sel = sites_listbox.curselection()
+            if not sel:
+                self._show_info_dialog(dialog, "Информация", "Выберите сайт для удаления")
+                return
+            idx = sel[0]
+            if idx >= len(self.ai_sites):
+                return
+            response = self._show_yes_no_dialog(dialog, "Подтверждение", "Удалить выбранный сайт?")
             if response:
                 del self.ai_sites[idx]
                 sites_listbox.delete(idx)
-                self.site_combo['values'] = [site['name'] for site in self.ai_sites]
+                self.site_combo['values'] = [s['name'] for s in self.ai_sites]
                 if self.ai_sites:
                     self.site_combo.current(0)
                 else:
@@ -474,55 +702,39 @@ class PromptManagerApp:
 
         btn_frame = ttk.Frame(dialog)
         btn_frame.pack(pady=5, fill=tk.X)
-
         ttk.Button(btn_frame, text="Добавить", command=add_site).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_frame, text="Редактировать", command=edit_site).pack(side=tk.LEFT, padx=5)
         ttk.Button(btn_frame, text="Удалить", command=delete_site).pack(side=tk.LEFT, padx=5)
 
+    # ─────────────────────────────────────────────
+    # Горячие клавиши (библиотека keyboard)
+    # ─────────────────────────────────────────────
     def register_hotkeys(self):
-        keyboard.unhook_all()  # Очищаем все горячие клавиши
+        keyboard.unhook_all()
         for prompt in self.prompts:
             hotkeys = prompt.get('hotkeys', '').strip()
             if hotkeys:
                 try:
-                    keyboard.add_hotkey(hotkeys, lambda p=prompt: self.insert_prompt_to_editor(p))
+                    normalized = normalize_hotkey(hotkeys)
+                    keyboard.add_hotkey(normalized, lambda p=prompt: self.insert_prompt_to_editor(p))
                 except ValueError as e:
-                    print(f"Ошибка регистрации горячих клавиш {hotkeys}: {e}")
+                    print(f"Ошибка регистрации горячих клавиш '{hotkeys}' -> '{normalize_hotkey(hotkeys)}': {e}")
 
     def insert_prompt_to_editor(self, prompt):
         self.root.after(0, self._insert_prompt, prompt)
 
     def _insert_prompt(self, prompt):
-        # Вставляем текст в текущую позицию курсора
-        self.prompt_text.insert(tk.INSERT, prompt['text'])
+        self.prompt_text.delete("1.0", tk.END)
+        self.prompt_text.insert(tk.END, prompt['text'])
         self.root.lift()
         self.root.focus_force()
 
-    def get_current_layout(self):
-        """Получаем текущую раскладку клавиатуры"""
-        hwnd = ctypes.windll.user32.GetForegroundWindow()
-        thread_id = ctypes.windll.user32.GetWindowThreadProcessId(hwnd, 0)
-        klid = ctypes.windll.user32.GetKeyboardLayout(thread_id)
-        return klid & 0xFFFF
+        if self.auto_send_after_insert.get():
+            self.root.after(500, self.send_to_site)
 
-    def set_layout(self, layout_code):
-        """Устанавливаем раскладку клавиатуры"""
-        hwnd = ctypes.windll.user32.GetForegroundWindow()
-        ctypes.windll.user32.PostMessageW(hwnd, 0x50, 0, layout_code)
-
-    def __enter__(self):
-        """Контекстный менеджер для временного переключения раскладки"""
-        self.original_layout = self.get_current_layout()
-        if self.original_layout != 0x0409:  # Если не английская
-            self.set_layout(0x0409)  # Устанавливаем английскую
-            time.sleep(0.3)  # Даем время на переключение
-        return self
-
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        """Возвращаем исходную раскладку"""
-        if self.original_layout and self.original_layout != 0x0409:
-            self.set_layout(self.original_layout)
-            time.sleep(0.3)
-
+    # ─────────────────────────────────────────────
+    # Отправка на сайт
+    # ─────────────────────────────────────────────
     def send_to_site(self):
         selected_site = self.site_var.get()
         site_url = None
@@ -530,67 +742,71 @@ class PromptManagerApp:
             if site['name'] == selected_site:
                 site_url = site['url']
                 break
-
         if not site_url:
-            messagebox.showerror("Ошибка", "Сайт не выбран!")
+            self._show_error_dialog(self.root, "Ошибка", "Сайт не выбран!")
             return
 
         prompt = self.prompt_text.get("1.0", tk.END).strip()
         if not prompt:
-            messagebox.showerror("Ошибка", "Промпт пуст!")
+            self._show_error_dialog(self.root, "Ошибка", "Промпт пуст!")
             return
 
-        # Копируем текст в буфер обмена
         self.root.clipboard_clear()
         self.root.clipboard_append(prompt)
-        self.root.update()
 
-        # Функция для выполнения Ctrl+V через win32api (работает при любой раскладке)
         def send_ctrl_v():
             try:
-                # Пытаемся импортировать модули win32api
-                import win32con
-                import win32api
-
-                # Эмулируем нажатие Ctrl+V с использованием виртуальных кодов клавиш
-                # VK_CONTROL = 0x11, VK_V = 0x56
-                win32api.keybd_event(win32con.VK_CONTROL, 0, 0, 0)  # Нажать Ctrl
-                win32api.keybd_event(0x56, 0, 0, 0)  # Нажать V
-                time.sleep(0.05)  # Небольшая пауза
-                win32api.keybd_event(0x56, 0, win32con.KEYEVENTF_KEYUP, 0)  # Отпустить V
-                win32api.keybd_event(win32con.VK_CONTROL, 0, win32con.KEYEVENTF_KEYUP, 0)  # Отпустить Ctrl
-
-            except ImportError:
-                # Если win32api не установлен, используем pyautogui как запасной вариант
-                # (хотя это может не сработать при неанглийской раскладке)
+                win32api.keybd_event(win32con.VK_CONTROL, 0, 0, 0)
+                win32api.keybd_event(0x56, 0, 0, 0)
+                time.sleep(0.05)
+                win32api.keybd_event(0x56, 0, win32con.KEYEVENTF_KEYUP, 0)
+                win32api.keybd_event(win32con.VK_CONTROL, 0, win32con.KEYEVENTF_KEYUP, 0)
+            except Exception as e:
+                print(f"Ошибка при отправке Ctrl+V: {e}")
                 pyautogui.hotkey('ctrl', 'v')
 
-        # Открываем сайт в браузере
         try:
             webbrowser.open(site_url)
-            time.sleep(4)  # Даем время для загрузки страницы
+            time.sleep(4)
+            send_ctrl_v()
 
-            # Для Perplexity Playground:
-            if "playground.perplexity.ai/" or "deepseek.com" in site_url:
-                # Вставляем текст с помощью Ctrl+V (работает при любой раскладке)
-                send_ctrl_v()
-
-                # Попробуем найти и нажать кнопку отправки
+            if self.auto_send_after_insert.get():
+                time.sleep(1)
                 try:
                     send_btn = pyautogui.locateOnScreen('send_button.png', confidence=0.8)
                     if send_btn:
                         pyautogui.click(send_btn)
                     else:
-                        # Если кнопка не найдена, пробуем нажать Enter
                         time.sleep(0.5)
                         pyautogui.press('enter')
                 except:
-                    # Если что-то пошло не так, просто нажимаем Enter
+                    time.sleep(0.5)
                     pyautogui.press('enter')
-
         except Exception as e:
-            messagebox.showerror("Ошибка", f"Не удалось открыть сайт: {e}")
+            self._show_error_dialog(self.root, "Ошибка", f"Не удалось открыть сайт: {e}")
 
+    # ─────────────────────────────────────────────
+    # Утилиты
+    # ─────────────────────────────────────────────
+    def _center_window(self, window, width, height):
+        screen_width = self.root.winfo_screenwidth()
+        screen_height = self.root.winfo_screenheight()
+        x = (screen_width - width) // 2
+        y = (screen_height - height) // 2
+        window.geometry(f"{width}x{height}+{x}+{y}")
+
+    def _show_error_dialog(self, parent, title, message):
+        messagebox.showerror(title, message, parent=parent)
+
+    def _show_info_dialog(self, parent, title, message):
+        messagebox.showinfo(title, message, parent=parent)
+
+    def _show_yes_no_dialog(self, parent, title, message):
+        return messagebox.askyesno(title, message, parent=parent)
+
+    # ─────────────────────────────────────────────
+    # Сохранение / Загрузка
+    # ─────────────────────────────────────────────
     def load_data(self):
         data_file = "prompt_manager_data.json"
         if os.path.exists(data_file):
@@ -598,24 +814,17 @@ class PromptManagerApp:
                 with open(data_file, "r", encoding="utf-8") as f:
                     data = json.load(f)
                     self.prompts = data.get("prompts", [])
-                    self.ai_sites = data.get("ai_sites", [
-                        {"name": "Perplexity AI", "url": "https://playground.perplexity.ai/"},
-                        {"name": "DeepSeek Chat", "url": "https://chat.deepseek.com/"}
-                    ])
+                    self.ai_sites = data.get("ai_sites", self.ai_sites)
+
+                    settings = data.get("settings", {})
+                    self.always_on_top.set(settings.get("always_on_top", False))
+                    self.auto_send_after_insert.set(settings.get("auto_send_after_insert", False))
+
+                    # Применяем настройку
+                    self.root.attributes('-topmost', self.always_on_top.get())
             except Exception as e:
-                messagebox.showerror("Ошибка загрузки",
-                                     f"Ошибка при загрузке сохранённых данных:\n{str(e)}\nБудут использованы настройки по умолчанию.")
+                print(f"Ошибка загрузки данных: {e}")
                 self.prompts = []
-                self.ai_sites = [
-                    {"name": "Perplexity AI", "url": "https://playground.perplexity.ai/"},
-                    {"name": "DeepSeek Chat", "url": "https://chat.deepseek.com/"}
-                ]
-        else:
-            self.prompts = []
-            self.ai_sites = [
-                {"name": "Perplexity AI", "url": "https://playground.perplexity.ai/"},
-                {"name": "DeepSeek Chat", "url": "https://chat.deepseek.com/"}
-            ]
 
     def save_data(self):
         data_file = "prompt_manager_data.json"
@@ -623,28 +832,27 @@ class PromptManagerApp:
             with open(data_file, "w", encoding="utf-8") as f:
                 json.dump({
                     "prompts": self.prompts,
-                    "ai_sites": self.ai_sites
+                    "ai_sites": self.ai_sites,
+                    "settings": {
+                        "always_on_top": self.always_on_top.get(),
+                        "auto_send_after_insert": self.auto_send_after_insert.get()
+                    }
                 }, f, ensure_ascii=False, indent=2)
         except Exception as e:
-            messagebox.showerror("Ошибка сохранения", f"Ошибка при сохранении данных:\n{str(e)}")
-
+            self._show_error_dialog(self.root, "Ошибка сохранения", f"Ошибка:\n{str(e)}")
 
     def on_close(self):
-        """Обработчик закрытия окна"""
         self.save_data()
-        keyboard.unhook_all()  # Отключаем все горячие клавиши
+        keyboard.unhook_all()
         self.root.destroy()
-
 
 
 if __name__ == "__main__":
     root = tk.Tk()
     try:
-        # Установка темы для более современного вида
         style = ttk.Style()
         style.theme_use('clam')
     except:
         pass
-
     app = PromptManagerApp(root)
     root.mainloop()
