@@ -51,7 +51,7 @@ class PromptManagerApp:
         self.prompts = []
         self.ai_sites = [
             {"name": "Perplexity AI", "url": "https://playground.perplexity.ai/"},
-            {"name": "DeepSeek Chat", "url": "https://chat.deepseek.com/"}
+            {"name": "Qwen", "url": "https://chat.qwen.ai/"}
         ]
 
         # Настройки (создаём ДО load_data)
