@@ -43,7 +43,7 @@
 </div>
 
 <div align="center">
-<img src="https://github.com/user-attachments/assets/09991a5a-0ecb-490c-97df-5d20fb35771e" alt="Меню управления сайтами">
+  <img width="502" height="382" alt="image" src="https://github.com/user-attachments/assets/1d9e0d27-0278-4796-b6f3-49a9c2d14489" alt="Меню управления сайтами"/>
 </div>
 
 <hr>
