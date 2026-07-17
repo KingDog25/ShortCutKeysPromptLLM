@@ -51,12 +51,15 @@ class PromptManagerApp:
         self.prompts = []
         self.ai_sites = [
             {"name": "Perplexity AI", "url": "https://playground.perplexity.ai/"},
-            {"name": "Qwen", "url": "https://chat.qwen.ai/"}
+            {"name": "DeepSeek Chat", "url": "https://chat.deepseek.com/"}
         ]
 
         # Настройки (создаём ДО load_data)
         self.always_on_top = tk.BooleanVar(value=False)
         self.auto_send_after_insert = tk.BooleanVar(value=False)
+
+        # Переменные для drag-and-drop
+        self.drag_data = {"x": 0, "y": 0, "item": None}
 
         self.load_data()
 
@@ -246,6 +249,70 @@ class PromptManagerApp:
         dialog._on_safe_close = on_dialog_close
 
     # ─────────────────────────────────────────────
+    # Контекстное меню для текстовых виджетов
+    # ─────────────────────────────────────────────
+    def _create_context_menu(self, widget):
+        """Создает контекстное меню для текстовых виджетов"""
+        context_menu = tk.Menu(widget, tearoff=0)
+        
+        context_menu.add_command(
+            label="Вырезать",
+            command=lambda: self._context_cut(widget)
+        )
+        context_menu.add_command(
+            label="Копировать",
+            command=lambda: self._context_copy(widget)
+        )
+        context_menu.add_command(
+            label="Вставить",
+            command=lambda: self._do_paste(widget)
+        )
+        context_menu.add_separator()
+        context_menu.add_command(
+            label="Выделить всё",
+            command=lambda: self._do_select_all(widget)
+        )
+        context_menu.add_separator()
+        context_menu.add_command(
+            label="Отмена",
+            command=lambda: self._do_undo(widget)
+        )
+        context_menu.add_command(
+            label="Удалить",
+            command=lambda: self._context_delete(widget)
+        )
+        
+        return context_menu
+
+    def _context_cut(self, widget):
+        """Вырезать (копировать и удалить)"""
+        self._do_copy(widget)
+        self._context_delete(widget)
+
+    def _context_copy(self, widget):
+        """Копировать"""
+        self._do_copy(widget)
+
+    def _context_delete(self, widget):
+        """Удалить выделенный текст"""
+        try:
+            if isinstance(widget, tk.Text):
+                widget.delete(tk.SEL_FIRST, tk.SEL_LAST)
+            elif isinstance(widget, ttk.Entry) or isinstance(widget, tk.Entry):
+                if widget.selection_present():
+                    widget.delete(tk.SEL_FIRST, tk.SEL_LAST)
+        except tk.TclError:
+            pass
+
+    def _show_context_menu(self, widget, event):
+        """Показывает контекстное меню"""
+        try:
+            context_menu = self._create_context_menu(widget)
+            context_menu.tk_popup(event.x_root, event.y_root)
+        except tk.TclError:
+            pass
+
+    # ─────────────────────────────────────────────
     # Интерфейс
     # ─────────────────────────────────────────────
     def create_interface(self):
@@ -273,6 +340,14 @@ class PromptManagerApp:
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         self.prompt_tree.pack(fill=tk.BOTH, expand=True)
 
+        # Привязываем функции для drag-and-drop
+        self.prompt_tree.bind('<Button-1>', self._on_tree_press)
+        self.prompt_tree.bind('<B1-Motion>', self._on_tree_motion)
+        self.prompt_tree.bind('<ButtonRelease-1>', self._on_tree_release)
+
+        # Привязываем контекстное меню к Treeview
+        self.prompt_tree.bind('<Button-3>', self._show_tree_context_menu)
+
         # Кнопки
         btn_frame = ttk.Frame(left_frame)
         btn_frame.pack(fill=tk.X, pady=5)
@@ -286,6 +361,9 @@ class PromptManagerApp:
             right_frame, wrap=tk.WORD, height=15, font=('Arial', 10), undo=True
         )
         self.prompt_text.pack(fill=tk.BOTH, expand=True, pady=5)
+
+        # Привязываем контекстное меню к текстовому редактору
+        self.prompt_text.bind('<Button-3>', lambda e: self._show_context_menu(self.prompt_text, e))
 
         # Выбор сайта
         site_frame = ttk.Frame(right_frame)
@@ -307,6 +385,112 @@ class PromptManagerApp:
         self.prompt_tree.bind("<Return>", lambda e: self.edit_selected_prompt())
 
         self.update_prompts_list()
+
+    # ─────────────────────────────────────────────
+    # Drag and Drop для переупорядочивания промптов
+    # ─────────────────────────────────────────────
+    def _on_tree_press(self, event):
+        """Обработка нажатия мыши на элемент Treeview"""
+        item = self.prompt_tree.identify('item', event.x, event.y)
+        if item:
+            self.drag_data['item'] = item
+            self.drag_data['x'] = event.x
+            self.drag_data['y'] = event.y
+            # Выделяем элемент
+            self.prompt_tree.selection_set(item)
+            # Загружаем промпт в редактор
+            self.load_selected_prompt_to_editor()
+
+    def _on_tree_motion(self, event):
+        """Обработка движения мыши при перетаскивании"""
+        if not self.drag_data['item']:
+            return
+        
+        # Вычисляем расстояние перетаскивания
+        dx = abs(event.x - self.drag_data['x'])
+        dy = abs(event.y - self.drag_data['y'])
+        
+        # Если расстояние больше 5 пиксельс, считаем это перетаскиванием
+        if dx > 5 or dy > 5:
+            # Визуально показываем, что элемент можно перетащить
+            self.prompt_tree.configure(cursor="hand2")
+
+    def _on_tree_release(self, event):
+        """Обработка отпускания мыши после перетаскивания"""
+        if not self.drag_data['item']:
+            self.prompt_tree.configure(cursor="")
+            return
+        
+        source_item = self.drag_data['item']
+        target_item = self.prompt_tree.identify('item', event.x, event.y)
+        
+        self.prompt_tree.configure(cursor="")
+        self.drag_data['item'] = None
+        
+        # Если перетащили на другой элемент
+        if target_item and source_item != target_item:
+            source_index = self.prompt_tree.index(source_item)
+            target_index = self.prompt_tree.index(target_item)
+            
+            # Меняем элементы в списке
+            self.prompts[source_index], self.prompts[target_index] = \
+                self.prompts[target_index], self.prompts[source_index]
+            
+            # Обновляем список
+            self.update_prompts_list()
+            
+            # Выделяем перемещённый элемент
+            children = self.prompt_tree.get_children()
+            if target_index < len(children):
+                self.prompt_tree.selection_set(children[target_index])
+                self.load_selected_prompt_to_editor()
+            
+            # Сохраняем изменения
+            self.save_data()
+
+    # ─────────────────────────────────────────────
+    # Контекстное меню для Treeview
+    # ─────────────────────────────────────────────
+    def _show_tree_context_menu(self, event):
+        """Показывает контекстное меню для Treeview"""
+        item = self.prompt_tree.identify('item', event.x, event.y)
+        if not item:
+            return
+        
+        self.prompt_tree.selection_set(item)
+        self.load_selected_prompt_to_editor()
+        
+        context_menu = tk.Menu(self.prompt_tree, tearoff=0)
+        context_menu.add_command(
+            label="Редактировать",
+            command=self.edit_selected_prompt
+        )
+        context_menu.add_command(
+            label="Удалить",
+            command=self.delete_selected_prompt
+        )
+        context_menu.add_separator()
+        context_menu.add_command(
+            label="Копировать текст",
+            command=self._copy_prompt_text
+        )
+        
+        try:
+            context_menu.tk_popup(event.x_root, event.y_root)
+        except tk.TclError:
+            pass
+
+    def _copy_prompt_text(self):
+        """Копирует текст выбранного промпта в буфер обмена"""
+        selected = self.prompt_tree.selection()
+        if not selected:
+            return
+        
+        item_index = self.prompt_tree.index(selected[0])
+        prompt = self.prompts[item_index]
+        
+        self.root.clipboard_clear()
+        self.root.clipboard_append(prompt['text'])
 
     # ─────────────────────────────────────────────
     # Работа с промптами
@@ -355,6 +539,9 @@ class PromptManagerApp:
         text_frame.rowconfigure(0, weight=1)
         prompt_text = scrolledtext.ScrolledText(text_frame, wrap=tk.WORD, width=60, height=20, undo=True)
         prompt_text.pack(fill=tk.BOTH, expand=True)
+
+        # Привязываем контекстное меню к текстовому редактору
+        prompt_text.bind('<Button-3>', lambda e: self._show_context_menu(prompt_text, e))
 
         def save_prompt():
             name = name_entry.get().strip()
@@ -486,6 +673,9 @@ class PromptManagerApp:
         prompt_text = scrolledtext.ScrolledText(text_frame, wrap=tk.WORD, width=80, height=25, undo=True)
         prompt_text.pack(fill=tk.BOTH, expand=True)
         prompt_text.insert(tk.END, prompt['text'])
+
+        # Привязываем контекстное меню к текстовому редактору
+        prompt_text.bind('<Button-3>', lambda e: self._show_context_menu(prompt_text, e))
 
         def save_edits():
             name = name_entry.get().strip()
